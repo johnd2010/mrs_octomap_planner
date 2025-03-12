@@ -9,3 +9,6 @@
 
 # Runtime-python
 *.pyc
+.qodo
+*c_cpp_properties.json
+*settings.json

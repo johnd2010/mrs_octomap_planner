@@ -770,7 +770,7 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
 
   /* prerequsities //{ */
 
-  const bool got_octomap              = sh_octomap_.hasMsg() && (ros::Time::now() - sh_octomap_.lastMsgTime()).toSec() < 2.0;
+  const bool got_octomap              = sh_octomap_.hasMsg();
   const bool got_tracker_cmd          = sh_tracker_cmd_.hasMsg() && (ros::Time::now() - sh_tracker_cmd_.lastMsgTime()).toSec() < 2.0;
   const bool got_control_manager_diag = sh_control_manager_diag_.hasMsg() && (ros::Time::now() - sh_control_manager_diag_.lastMsgTime()).toSec() < 2.0;
   const bool got_constraints          = sh_constraints_.hasMsg() && (ros::Time::now() - sh_constraints_.lastMsgTime()).toSec() < 2.0;

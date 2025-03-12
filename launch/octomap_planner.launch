@@ -23,7 +23,7 @@
 
     <node pkg="nodelet" type="nodelet" name="octomap_planner" args="$(arg nodelet) mrs_octomap_planner/OctomapPlanner $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)">
 
-      <rosparam file="$(find mrs_octomap_planner)/config/octomap_planner.yaml" command="load" />
+      <rosparam file="$(find mrs_octomap_planner)/launch/config/octomap_planner.yaml" command="load" />
 
       <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" />
 
@@ -32,7 +32,7 @@
       <!-- topics in -->
 
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
-      <remap from="~octomap_in" to="octomap_server/octomap_local_full" />
+      <remap from="~octomap_in" to="locus/octomap" />
       <remap from="~control_manager_diag_in" to="control_manager/diagnostics" />
       <remap from="~constraints_in" to="control_manager/current_constraints" />
 
