@@ -517,14 +517,15 @@ void OctomapPlanner::timeoutOctomap(const std::string& topic, const ros::Time& l
   }
 
   if (state_ != STATE_IDLE) {
+    return;
 
-    ROS_WARN_THROTTLE(1.0, "[MrsOctomapPlanner]: octomap timeouted!");
+    // ROS_WARN_THROTTLE(1.0, "[MrsOctomapPlanner]: octomap timeouted!");
 
-    ready_to_plan_ = false;
+    // ready_to_plan_ = false;
 
-    changeState(STATE_IDLE);
+    // changeState(STATE_IDLE);
 
-    hover();
+    // hover();
   }
 }
 
@@ -856,7 +857,7 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
         diagnostics_.idle = false;
       }
 
-      if (replanning_counter_ >= 2) {
+      if (replanning_counter_ >= 85) {
 
         ROS_ERROR("[MrsOctomapPlanner]: planning failed, the uav is stuck");
 
