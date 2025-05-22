@@ -12,8 +12,8 @@
 
   <arg     if="$(arg debug)" name="launch_prefix" value="debug_roslaunch" />
   <arg unless="$(arg debug)" name="launch_prefix" value="" />
-
-  <arg name="nodelet_manager_name" default="" />
+  <arg name="nodelet_manager_name" default="$(env UAV_NAME)_nodelet_manager" />
+  <!-- <arg name="nodelet_manager_name" default="" /> -->
   <arg     if="$(eval arg('standalone') or arg('debug'))" name="nodelet" value="standalone" />
   <arg unless="$(eval arg('standalone') or arg('debug'))" name="nodelet" value="load" />
   <arg     if="$(eval arg('standalone') or arg('debug'))" name="nodelet_manager" value="" />
