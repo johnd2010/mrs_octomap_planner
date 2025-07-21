@@ -31,6 +31,7 @@
 
 #include <mrs_msgs/TrackerCommand.h>
 #include <mrs_msgs/Vec4.h>
+#include <mrs_msgs/Vec1.h>
 #include <mrs_msgs/ReferenceStampedSrv.h>
 #include <mrs_msgs/GetPathSrv.h>
 #include <mrs_msgs/String.h>
@@ -85,14 +86,12 @@ private:
 
   // params
   double _euclidean_distance_cutoff_;
-  double _safe_obstacle_distance_;
   double _distance_penalty_;
   double _greedy_penalty_;
   double _timeout_threshold_;
   double _time_for_trajectory_generator_;
   double _max_waypoint_distance_;
   double _min_altitude_;
-  double _max_altitude_;
   double _rate_main_timer_;
   double _rate_diagnostics_timer_;
   double _rate_future_check_timer_;
@@ -129,6 +128,14 @@ private:
   bool   _scope_timer_enabled_;
   double _scope_timer_duration_;
 
+  double     _max_altitude_;
+  std::mutex mutex_max_altitude_;
+
+  double     _safe_obstacle_distance_;
+  double     _safe_obstacle_distance_min_;
+  double     _safe_obstacle_distance_max_;
+  std::mutex mutex_safety_distance_;
+
   bool   _turn_in_flight_direction_;
   double _heading_offset_;
   double _max_segment_length_for_heading_sampling_;  // TODO: fix variable name
@@ -139,6 +146,11 @@ private:
 
   std::shared_ptr<OcTree_t> octree_;
   std::mutex                mutex_octree_;
+
+  ros::Time  planner_time_flag_;
+  std::mutex mutex_planner_time_flag_;
+  bool _restart_planner_on_deadlock_;
+  double planner_deadlock_timeout_;
 
   // visualizer params
   double _points_scale_;
@@ -177,12 +189,16 @@ private:
   ros::ServiceServer service_server_stop_;
   ros::ServiceServer service_server_reference_;
   ros::ServiceServer service_server_set_planner_;
+  ros::ServiceServer service_server_set_safety_distance_;
+  ros::ServiceServer service_server_set_max_altitude_;
 
   // service server callbacks
   bool callbackGoto([[maybe_unused]] mrs_msgs::Vec4::Request& req, mrs_msgs::Vec4::Response& res);
   bool callbackStop([[maybe_unused]] std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& res);
   bool callbackReference([[maybe_unused]] mrs_msgs::ReferenceStampedSrv::Request& req, mrs_msgs::ReferenceStampedSrv::Response& res);
   bool callbackSetPlanner([[maybe_unused]] mrs_msgs::String::Request& req, mrs_msgs::String::Response& res);
+  bool callbackSetSafetyDistance(mrs_msgs::Vec1::Request& req, mrs_msgs::Vec1::Response& res);
+  bool callbackSetMaxAltitude(mrs_msgs::Vec1::Request& req, mrs_msgs::Vec1::Response& res);
 
   // service clients
   mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>             sc_get_trajectory_;
@@ -274,9 +290,13 @@ void OctomapPlanner::onInit() {
 
   ros::Time::waitForValid();
 
+  planner_time_flag_ = ros::Time(0);
+
   ROS_INFO("[MrsOctomapPlanner]: initializing");
 
   mrs_lib::ParamLoader param_loader(nh_, "MrsOctomapPlanner");
+
+  double _planner_deadlock_timeout_factor;
 
   param_loader.loadParam("uav_name", _uav_name_);
   param_loader.loadParam("main_timer/rate", _rate_main_timer_);
@@ -284,7 +304,9 @@ void OctomapPlanner::onInit() {
   param_loader.loadParam("future_check_timer/rate", _rate_future_check_timer_);
 
   param_loader.loadParam("euclidean_distance_cutoff", _euclidean_distance_cutoff_);
-  param_loader.loadParam("safe_obstacle_distance", _safe_obstacle_distance_);
+  param_loader.loadParam("safe_obstacle_distance/default", _safe_obstacle_distance_);
+  param_loader.loadParam("safe_obstacle_distance/min", _safe_obstacle_distance_min_);
+  param_loader.loadParam("safe_obstacle_distance/max", _safe_obstacle_distance_max_);
   param_loader.loadParam("distance_penalty", _distance_penalty_);
   param_loader.loadParam("greedy_penalty", _greedy_penalty_);
   param_loader.loadParam("planning_tree/resolution", planning_tree_resolution_);
@@ -330,10 +352,25 @@ void OctomapPlanner::onInit() {
   param_loader.loadParam("min_allowed_trajectory_points_after_crop", _min_allowed_trajectory_points_after_crop_);
   param_loader.loadParam("scope_timer/enable", _scope_timer_enabled_);
   param_loader.loadParam("scope_timer/duration", _scope_timer_duration_);
+  param_loader.loadParam("restart_planner_on_deadlock", _restart_planner_on_deadlock_);
+  param_loader.loadParam("planner_deadlock_timeout_factor", _planner_deadlock_timeout_factor);
 
   if (!param_loader.loadedSuccessfully()) {
     ROS_ERROR("[MrsOctomapPlanner]: could not load all parameters");
     ros::shutdown();
+  }
+
+  // set planner deadlock timeout
+  if (_restart_planner_on_deadlock_) {
+
+    if (_planner_deadlock_timeout_factor < 3.0) { 
+      ROS_WARN("[MrsOctomapPlanner]: Timeout factor for planner deadlock detection was set too low (< 3.0). Setting factor to 3.0 to prevent premature killing of the planner.");
+      _planner_deadlock_timeout_factor = 3.0;
+    }
+
+    planner_deadlock_timeout_ = _planner_deadlock_timeout_factor * _timeout_threshold_;
+    ROS_INFO("[MrsOctomapPlanner]: Planner deadlock timeout set to %.2f s.", planner_deadlock_timeout_);
+
   }
 
   octree_ = nullptr;
@@ -375,10 +412,12 @@ void OctomapPlanner::onInit() {
 
   // | --------------------- service servers -------------------- |
 
-  service_server_goto_        = nh_.advertiseService("goto_in", &OctomapPlanner::callbackGoto, this);
-  service_server_stop_        = nh_.advertiseService("stop_in", &OctomapPlanner::callbackStop, this);
-  service_server_reference_   = nh_.advertiseService("reference_in", &OctomapPlanner::callbackReference, this);
-  service_server_set_planner_ = nh_.advertiseService("planner_type_in", &OctomapPlanner::callbackSetPlanner, this);
+  service_server_goto_                = nh_.advertiseService("goto_in", &OctomapPlanner::callbackGoto, this);
+  service_server_stop_                = nh_.advertiseService("stop_in", &OctomapPlanner::callbackStop, this);
+  service_server_reference_           = nh_.advertiseService("reference_in", &OctomapPlanner::callbackReference, this);
+  service_server_set_planner_         = nh_.advertiseService("planner_type_in", &OctomapPlanner::callbackSetPlanner, this);
+  service_server_set_safety_distance_ = nh_.advertiseService("set_safety_distance_in", &OctomapPlanner::callbackSetSafetyDistance, this);
+  service_server_set_max_altitude_    = nh_.advertiseService("set_max_altitude_in", &OctomapPlanner::callbackSetMaxAltitude, this);
 
   // | ----------------------- transformer ---------------------- |
 
@@ -759,6 +798,66 @@ bool OctomapPlanner::callbackSetPlanner([[maybe_unused]] mrs_msgs::String::Reque
 
 //}
 
+/* callbackSetSafetyDistance() //{ */
+
+bool OctomapPlanner::callbackSetSafetyDistance(mrs_msgs::Vec1::Request& req, mrs_msgs::Vec1::Response& res) {
+
+  if (!is_initialized_) {
+    return false;
+  }
+
+  if (req.goal >= _safe_obstacle_distance_min_ && req.goal <= _safe_obstacle_distance_max_) {
+
+    {
+      std::scoped_lock lock(mutex_safety_distance_);
+
+      _safe_obstacle_distance_ = req.goal;
+    }
+
+    ROS_INFO("[MrsOctomapPlanner]: setting safety distance to %.2f m.", _safe_obstacle_distance_);
+    res.success = true;
+
+  } else {
+
+    ROS_WARN("[MrsOctomapPlanner]: failed to set safety distance %.2f m (outside the allowed range [%.2f, %.2f])", req.goal, _safe_obstacle_distance_min_, _safe_obstacle_distance_max_);
+    res.success = false;
+  }
+
+  res.message = res.success ? "safety distance set" : "safety distance not set";
+
+  ROS_INFO("[MrsOctomapPlanner]: %s", res.message.c_str());
+
+  return true;
+}
+
+//}
+
+/* callbackSetMaxAltitude() //{ */
+
+bool OctomapPlanner::callbackSetMaxAltitude(mrs_msgs::Vec1::Request& req, mrs_msgs::Vec1::Response& res) {
+
+  if (!is_initialized_) {
+    return false;
+  }
+
+  {
+    std::scoped_lock lock(mutex_max_altitude_);
+
+    _max_altitude_ = req.goal;
+  }
+
+  ROS_INFO("[MrsOctomapPlanner]: setting max altitude to %.2f m.", _max_altitude_);
+  res.success = true;
+
+  res.message = "max altitude set";
+
+  ROS_INFO("[MrsOctomapPlanner]: %s", res.message.c_str());
+
+  return true;
+}
+
+//}
+
 // | ------------------------- timers ------------------------- |
 
 /* timerMain() //{ */
@@ -926,31 +1025,60 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
       std::pair<std::vector<octomap::point3d>, bool> waypoints;
       /* ros::Time                                      mct_start = ros::Time::now(); */
 
+      auto safe_obstacle_distance = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+      auto max_altitude           = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
+
       if (_use_subt_planner_) {
 
         // | -------------------- MRS SubT planner -------------------- |
         mrs_subt_planning::AstarPlanner subt_planner = mrs_subt_planning::AstarPlanner();
 
-        subt_planner.initialize(true, time_for_planning - _subt_processing_timeout_, _subt_processing_timeout_, _safe_obstacle_distance_, _subt_clearing_dist_,
-                                _min_altitude_, _max_altitude_, _subt_debug_info_, bv_planner_, false);
+        subt_planner.initialize(true, time_for_planning - _subt_processing_timeout_, _subt_processing_timeout_, safe_obstacle_distance, _subt_clearing_dist_,
+                                _min_altitude_, max_altitude, _subt_debug_info_, bv_planner_, false);
         subt_planner.setAstarAdmissibility(_subt_admissibility_);
 
         ROS_INFO("[MrsOctomapPlanner]: Calling find path method.");
+
+        {
+          std::scoped_lock lock(mutex_planner_time_flag_);
+
+          planner_time_flag_ = ros::Time::now();
+        }
+
         waypoints = subt_planner.findPath(plan_from, user_goal_octpoint, octree, _subt_make_path_straight_, _subt_apply_postprocessing_, _subt_bbx_horizontal_,
                                           _subt_bbx_vertical_, _subt_processing_safe_dist_, _subt_processing_max_iterations_,
                                           _subt_processing_horizontal_neighbors_only_, _subt_processing_z_diff_tolerance_, _subt_processing_path_length_,
                                           _subt_shortening_window_size_, _subt_shortening_distance_, _subt_apply_pruning_, _subt_pruning_dist_, false, 2.0,
                                           _subt_remove_obsolete_points_, _subt_obsolete_points_tolerance_);
 
+        {
+          std::scoped_lock lock(mutex_planner_time_flag_);
+
+          planner_time_flag_ = ros::Time(0);
+        }
+
       } else {
 
         ROS_INFO("[MrsOctomapPlanner]: Initializing astar planner.");
         mrs_octomap_planner::AstarPlanner planner = mrs_octomap_planner::AstarPlanner(
-            _safe_obstacle_distance_, _euclidean_distance_cutoff_, _distance_transform_distance_, planning_tree_resolution_, _distance_penalty_,
-            _greedy_penalty_, _timeout_threshold_, _max_waypoint_distance_, _min_altitude_, _max_altitude_, _unknown_is_occupied_, bv_planner_);
+            safe_obstacle_distance, _euclidean_distance_cutoff_, _distance_transform_distance_, planning_tree_resolution_, _distance_penalty_, _greedy_penalty_,
+            _timeout_threshold_, _max_waypoint_distance_, _min_altitude_, max_altitude, _unknown_is_occupied_, bv_planner_);
 
         ROS_INFO("[MrsOctomapPlanner]: Calling find path method.");
+
+        {
+          std::scoped_lock lock(mutex_planner_time_flag_);
+
+          planner_time_flag_ = ros::Time::now();
+        }
+
         waypoints = planner.findPath(plan_from, user_goal_octpoint, octree, time_for_planning);
+
+        {
+          std::scoped_lock lock(mutex_planner_time_flag_);
+
+          planner_time_flag_ = ros::Time(0);
+        }
       }
 
       timer.checkpoint("after findPath()");
@@ -1399,6 +1527,8 @@ void OctomapPlanner::timerFutureCheck([[maybe_unused]] const ros::TimerEvent& ev
       trajectory.points.push_back(transformed_pose->reference);
     }
 
+    auto safe_obstacle_distance = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+
     // generate a set of points around the waypoint (2D/3D?)
     // for each point, do raycasting from current waypoint to the point
     // check for collisions
@@ -1407,7 +1537,7 @@ void OctomapPlanner::timerFutureCheck([[maybe_unused]] const ros::TimerEvent& ev
 
       octomap::point3d point1(trajectory.points[i].position.x, trajectory.points[i].position.y, trajectory.points[i].position.z);
       double           angle_step          = 2 * M_PI / _collision_check_point_count_;
-      double           raycasting_distance = _safe_obstacle_distance_ - octree->getResolution();
+      double           raycasting_distance = safe_obstacle_distance - octree->getResolution();
       bool             cropped_trajectory  = false;
 
       // TODO check in 3D as well??
@@ -1525,6 +1655,15 @@ void OctomapPlanner::timerDiagnostics([[maybe_unused]] const ros::TimerEvent& ev
   catch (...) {
     ROS_ERROR("exception caught during publishing topic '%s'", pub_diagnostics_.getTopic().c_str());
   }
+
+  auto planner_time_flag = mrs_lib::get_mutexed(mutex_planner_time_flag_, planner_time_flag_);
+
+  if (_restart_planner_on_deadlock_ && planner_time_flag != ros::Time(0)) {
+    if ((ros::Time::now() - planner_time_flag).toSec() > planner_deadlock_timeout_) {
+      ROS_ERROR("[MrsOctomapPlanner]: Planner is deadlocked, restarting!");
+      ros::shutdown();
+    }
+  }
 }
 
 //}
@@ -1609,7 +1748,7 @@ std::optional<mrs_msgs::ReferenceStamped> OctomapPlanner::getInitialCondition(co
   }
 
   if (prediction_full_state.stamps.size() == 0) {
-    ROS_ERROR_THROTTLE(1.0, "[MrsOctomapPLanner]: Could not obtain initial condition, prediction full state is empty.");
+    ROS_ERROR_THROTTLE(1.0, "[MrsOctomapPlanner]: Could not obtain initial condition, prediction full state is empty.");
     return {};
   }
 

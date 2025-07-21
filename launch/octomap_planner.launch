@@ -21,7 +21,7 @@
 
   <group ns="$(arg UAV_NAME)">
 
-    <node pkg="nodelet" type="nodelet" name="octomap_planner" args="$(arg nodelet) mrs_octomap_planner/OctomapPlanner $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)">
+    <node pkg="nodelet" type="nodelet" name="octomap_planner" args="$(arg nodelet) mrs_octomap_planner/OctomapPlanner $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="true">
 
       <rosparam file="$(find mrs_octomap_planner)/launch/config/octomap_planner.yaml" command="load" />
 
@@ -46,6 +46,8 @@
       <remap from="~stop_in" to="~stop" />
       <remap from="~reference_in" to="~reference" />
       <remap from="~planner_type_in" to="~set_planner" />
+      <remap from="~set_safety_distance_in" to="~distance" />
+      <remap from="~set_max_altitude_in" to="~altitude" />
 
       <!-- services out -->
 
