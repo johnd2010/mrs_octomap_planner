@@ -11,9 +11,10 @@ diagnostics_timer:
   rate: 10.0 # [Hz]
 
 euclidean_distance_cutoff: 1.0 # [m] maximum distance for Euclidean distance field
+permissible_distance_cutoff: 1.0 # [m] minimum distance to consider success
 safe_obstacle_distance: 
-  default: 1.0 # [m]
-  min: 0.6 # [m]
+  default: 1.4 # [m]
+  min: 1.4 # [m]
   max: 5.0 # [m]
 
 min_path_length: 0.2 # [m] minimum length of path to be published
@@ -46,7 +47,7 @@ trajectory_generator:
   max_segment_length_heading: 1.0 # [m] maximum length of segment for heading sampling
 
 subt_planner:
-  use: false
+  use: true
   apply_postprocessing: false
   make_path_straight: true # cannot be applied if postprocessing is active
   debug_info: false
