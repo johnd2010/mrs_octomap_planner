@@ -86,6 +86,7 @@ private:
 
   // params
   double _euclidean_distance_cutoff_;
+  double _permissible_distance_cutoff_;
   double _distance_penalty_;
   double _greedy_penalty_;
   double _timeout_threshold_;
@@ -304,6 +305,7 @@ void OctomapPlanner::onInit() {
   param_loader.loadParam("future_check_timer/rate", _rate_future_check_timer_);
 
   param_loader.loadParam("euclidean_distance_cutoff", _euclidean_distance_cutoff_);
+  param_loader.loadParam("permissible_distance_cutoff", _permissible_distance_cutoff_);
   param_loader.loadParam("safe_obstacle_distance/default", _safe_obstacle_distance_);
   param_loader.loadParam("safe_obstacle_distance/min", _safe_obstacle_distance_min_);
   param_loader.loadParam("safe_obstacle_distance/max", _safe_obstacle_distance_max_);
@@ -1418,7 +1420,7 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
 
       ROS_INFO_THROTTLE(1.0, "[MrsOctomapPlanner]: dist to goal: %.2f m", dist_to_goal);
 
-      if (dist_to_goal < 2 * planning_tree_resolution_) {
+      if (dist_to_goal < 2 * planning_tree_resolution_ || dist_to_goal < _permissible_distance_cutoff_) {
         ROS_INFO("[MrsOctomapPlanner]: user goal reached");
         changeState(STATE_IDLE);
         break;
@@ -1761,6 +1763,7 @@ std::optional<mrs_msgs::ReferenceStamped> OctomapPlanner::getInitialCondition(co
   orig_reference.header = prediction_full_state.header;
 
   ros::Time future_time_stamp;
+  bool found_future_state = false;
 
   for (int i = 0; i < prediction_full_state.stamps.size(); i++) {
 
@@ -1770,9 +1773,15 @@ std::optional<mrs_msgs::ReferenceStamped> OctomapPlanner::getInitialCondition(co
       orig_reference.reference.position.z = prediction_full_state.position[i].z;
       orig_reference.reference.heading    = prediction_full_state.heading[i];
       future_time_stamp                   = prediction_full_state.stamps[i];
+      found_future_state = true;
       break;
     }
   }
+
+if (!found_future_state) {
+    ROS_ERROR_THROTTLE(1.0, "[MrsOctomapPlanner]: could not find future state in prediction for desired time");
+    return {};
+}
 
   // transform the initial condition to the current map frame
 
