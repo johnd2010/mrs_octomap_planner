@@ -1,6 +1,7 @@
 /* includes //{ */
 
 #include <memory>
+#include <octomap/octomap_types.h>
 #include <ros/init.h>
 #include <ros/ros.h>
 #include <ros/package.h>
@@ -1015,7 +1016,8 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
       /*//}*/
 
       /* check if goal was reached */ /*//{*/
-      if ((plan_from - user_goal_octpoint).norm() < planning_tree_resolution_) {
+      
+      if ((plan_from - user_goal_octpoint).norm() < planning_tree_resolution_ || (octomap::point3d(plan_from.x(),plan_from.y(),0) - octomap::point3d(user_goal_octpoint.x(),user_goal_octpoint.y(),0)).norm() < _permissible_distance_cutoff_) {
 
         ROS_INFO_THROTTLE(1.0, "[MrsOctomapPlanner]: we reached the target");
         changeState(STATE_IDLE);
@@ -1417,10 +1419,11 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
 
       /* double dist_to_goal = (initial_pos - user_goal_octpoint).norm(); */
       double dist_to_goal = (position_cmd_octomap - user_goal_octpoint).norm();
+      double dist_to_goal_xy = (octomap::point3d(position_cmd_octomap.x(),position_cmd_octomap.y(),0) - octomap::point3d(user_goal_octpoint.x(),user_goal_octpoint.y(),0)).norm();
 
       ROS_INFO_THROTTLE(1.0, "[MrsOctomapPlanner]: dist to goal: %.2f m", dist_to_goal);
 
-      if (dist_to_goal < 2 * planning_tree_resolution_ || dist_to_goal < _permissible_distance_cutoff_) {
+      if (dist_to_goal < 2 * planning_tree_resolution_ || dist_to_goal_xy < _permissible_distance_cutoff_) {
         ROS_INFO("[MrsOctomapPlanner]: user goal reached");
         changeState(STATE_IDLE);
         break;
