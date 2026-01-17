@@ -27,15 +27,31 @@ set(CATKIN_DEPENDENCIES
   roscpp
   rospy
   std_msgs
-  )
+  geometry_msgs      
+  message_generation
+)
 
 set(LIBRARIES
   MrsOctomapPlanner_OctomapPlanner
-  )
+)
 
 find_package(catkin REQUIRED
   ${CATKIN_DEPENDENCIES}
-  )
+)
+
+# <--- Added: Register the service file
+add_service_files(
+  FILES
+  AstarPath.srv
+)
+
+# <--- Added: Generate the headers
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  mrs_msgs
+  geometry_msgs
+)
 
 find_package(octomap REQUIRED)
 add_definitions(-DOCTOMAP_NODEBUGOUT)
@@ -52,32 +68,34 @@ catkin_package(
   CATKIN_DEPENDS ${CATKIN_DEPENDENCIES}
   LIBRARIES ${LIBRARIES}
   DEPENDS OCTOMAP
-  )
+)
 
 include_directories(SYSTEM
   include
   ${catkin_INCLUDE_DIRS}
   ${OCTOMAP_INCLUDE_DIRS}
   ${dynamicEDT3D_INCLUDE_DIRS}
-  )
+)
 
 # Octomap Planner
 
 add_library(MrsOctomapPlanner_OctomapPlanner
   src/octomap_planner.cpp
   src/astar_planner.cpp
-  )
+)
 
+# <--- Modified: Added dependency on message generation
 add_dependencies(MrsOctomapPlanner_OctomapPlanner
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
-  )
+  ${PROJECT_NAME}_generate_messages_cpp
+)
 
 target_link_libraries(MrsOctomapPlanner_OctomapPlanner
   ${catkin_LIBRARIES}
   ${OCTOMAP_LIBRARIES}
   ${DYNAMICEDT3D_LIBRARIES}
-  )
+)
 
 ## --------------------------------------------------------------
 ## |                           Install                          |
@@ -87,12 +105,12 @@ install(TARGETS ${LIBRARIES}
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_GLOBAL_BIN_DESTINATION}
-  )
+)
 
 install(DIRECTORY launch config
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-  )
+)
 
 install(FILES nodelets.xml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-  )
+)

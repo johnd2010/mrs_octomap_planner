@@ -49,6 +49,8 @@
 #include <astar_planner.hpp>
 #include <mrs_subt_planning_lib/astar_planner.h>
 
+#include <mrs_octomap_planner/AstarPath.h>
+
 //}
 
 namespace mrs_octomap_planner
@@ -185,6 +187,7 @@ private:
   // subscriber callbacks
   void callbackTrackerCmd(const mrs_msgs::TrackerCommand::ConstPtr msg);
   void callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg);
+  bool callbackAstarPath(mrs_octomap_planner::AstarPath::Request& req, mrs_octomap_planner::AstarPath::Response& res);
 
   // service servers
   ros::ServiceServer service_server_goto_;
@@ -193,6 +196,7 @@ private:
   ros::ServiceServer service_server_set_planner_;
   ros::ServiceServer service_server_set_safety_distance_;
   ros::ServiceServer service_server_set_max_altitude_;
+  ros::ServiceServer service_server_astar_path_;
 
   // service server callbacks
   bool callbackGoto([[maybe_unused]] mrs_msgs::Vec4::Request& req, mrs_msgs::Vec4::Response& res);
@@ -421,6 +425,7 @@ void OctomapPlanner::onInit() {
   service_server_set_planner_         = nh_.advertiseService("planner_type_in", &OctomapPlanner::callbackSetPlanner, this);
   service_server_set_safety_distance_ = nh_.advertiseService("set_safety_distance_in", &OctomapPlanner::callbackSetSafetyDistance, this);
   service_server_set_max_altitude_    = nh_.advertiseService("set_max_altitude_in", &OctomapPlanner::callbackSetMaxAltitude, this);
+  service_server_astar_path_          = nh_.advertiseService("astar_path_in", &OctomapPlanner::callbackAstarPath, this);
 
   // | ----------------------- transformer ---------------------- |
 
@@ -495,6 +500,90 @@ void OctomapPlanner::timeoutTrackerCmd(const std::string& topic, const ros::Time
 
     hover();
   }
+}
+
+//}
+/* callbackAstarPath() //{ */
+
+bool OctomapPlanner::callbackAstarPath(mrs_octomap_planner::AstarPath::Request& req, mrs_octomap_planner::AstarPath::Response& res) {
+
+  if (!is_initialized_) {
+    res.success = false;
+    res.message = "Planner not initialized";
+    return true;
+  }
+
+  // 1. Thread-safe copy of the map
+  std::shared_ptr<octomap::OcTree> octree_copy;
+  {
+    std::scoped_lock lock(mutex_octree_);
+    if (!octree_) {
+      res.success = false;
+      res.message = "No map received yet";
+      return true;
+    }
+    octree_copy = std::make_shared<octomap::OcTree>(*octree_);
+  }
+
+  // 2. Extract Start and Goal from the request
+  octomap::point3d start_pt(req.start.position.x, req.start.position.y, req.start.position.z);
+  octomap::point3d goal_pt(req.goal.position.x, req.goal.position.y, req.goal.position.z);
+
+  // 3. Initialize the AstarPlanner
+  // reusing the mutexed parameters from the main node
+  auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+  auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
+
+  mrs_octomap_planner::AstarPlanner planner(
+      0.3, //Changed
+      _euclidean_distance_cutoff_, 
+      _distance_transform_distance_, 
+      planning_tree_resolution_, 
+      _distance_penalty_, 
+      _greedy_penalty_,
+      _timeout_threshold_, 
+      _max_waypoint_distance_, 
+      _min_altitude_, 
+      _max_altitude_, 
+      false,  //Changed
+      bv_planner_
+  );
+
+  // 4. Find the path
+  auto result = planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
+  std::vector<octomap::point3d> waypoints = result.first;
+
+  if (waypoints.empty()) {
+    res.success = false;
+    res.message = "Path planning failed (path empty)";
+    res.total_distance = -1.0;
+    return true;
+  }
+
+  // 5. Calculate Distance and populate Response
+  double total_dist = 0.0;
+  res.path.clear();
+  
+  for (size_t i = 0; i < waypoints.size(); ++i) {
+    // Convert octomap point to geometry_msgs::Point
+    geometry_msgs::Point p;
+    p.x = waypoints[i].x();
+    p.y = waypoints[i].y();
+    p.z = waypoints[i].z();
+    
+    res.path.push_back(p);
+
+    // Sum up Euclidean distance between segments
+    if (i > 0) {
+      total_dist += (waypoints[i] - waypoints[i-1]).norm();
+    }
+  }
+
+  res.success = true;
+  res.message = "Path found";
+  res.total_distance = total_dist;
+
+  return true;
 }
 
 //}
