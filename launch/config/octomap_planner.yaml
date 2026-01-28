@@ -13,8 +13,8 @@ diagnostics_timer:
 euclidean_distance_cutoff: 1.0 # [m] maximum distance for Euclidean distance field
 permissible_distance_cutoff: 2.0 # [m] minimum distance to consider success
 safe_obstacle_distance: 
-  default: 1.4 # [m]
-  min: 1.4 # [m]
+  default: 1.0 # [m]
+  min: 1.0 # [m]
   max: 5.0 # [m]
 
 min_path_length: 0.2 # [m] minimum length of path to be published
