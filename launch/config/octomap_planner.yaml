@@ -13,8 +13,8 @@ diagnostics_timer:
 euclidean_distance_cutoff: 1.0 # [m] maximum distance for Euclidean distance field
 permissible_distance_cutoff: 2.0 # [m] minimum distance to consider success
 safe_obstacle_distance: 
-  default: 0.5 # [m]
-  min: 0.5 # [m]
+  default: 1.2 # [m]
+  min: 1.2 # [m]
   max: 5.0 # [m]
 
 min_path_length: 0.2 # [m] minimum length of path to be published
@@ -48,8 +48,8 @@ trajectory_generator:
 
 subt_planner:
   use: true
-  apply_postprocessing: false
-  make_path_straight: true # cannot be applied if postprocessing is active
+  apply_postprocessing: true
+  make_path_straight: false # cannot be applied if postprocessing is active
   debug_info: false
   clearing_dist: 0.15 # [m] clear occupied and unknown space up to this distance from the starting position, might cause collision if greater than min_path_length
   admissibility: 1.0 # allows paths of length up to (admissibility * optimum length), speeds up the planning
@@ -65,7 +65,7 @@ subt_planner:
   postprocessing:
     timeout: 0.05 # [s]
     path_length: -1.0 # [m] length of subpath that is passed to postprocessing (set negativ number to process whole path)
-    safe_dist: 2.5 # [m]
+    safe_dist: 1.2 # [m]
     max_iteration: 5
     horizontal_neighbors_only: true
     z_diff_tolerance: 0.5 # [m]
