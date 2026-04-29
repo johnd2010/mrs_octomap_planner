@@ -50,6 +50,8 @@
 #include <mrs_subt_planning_lib/astar_planner.h>
 
 #include <mrs_octomap_planner/AstarPath.h>
+#include <mrs_octomap_planner/Waypoints.h>
+
 
 //}
 
@@ -188,6 +190,7 @@ private:
   void callbackTrackerCmd(const mrs_msgs::TrackerCommand::ConstPtr msg);
   void callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg);
   bool callbackAstarPath(mrs_octomap_planner::AstarPath::Request& req, mrs_octomap_planner::AstarPath::Response& res);
+  bool callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res);
 
   // service servers
   ros::ServiceServer service_server_goto_;
@@ -197,6 +200,7 @@ private:
   ros::ServiceServer service_server_set_safety_distance_;
   ros::ServiceServer service_server_set_max_altitude_;
   ros::ServiceServer service_server_astar_path_;
+  ros::ServiceServer service_server_waypoints_;
 
   // service server callbacks
   bool callbackGoto([[maybe_unused]] mrs_msgs::Vec4::Request& req, mrs_msgs::Vec4::Response& res);
@@ -426,6 +430,7 @@ void OctomapPlanner::onInit() {
   service_server_set_safety_distance_ = nh_.advertiseService("set_safety_distance_in", &OctomapPlanner::callbackSetSafetyDistance, this);
   service_server_set_max_altitude_    = nh_.advertiseService("set_max_altitude_in", &OctomapPlanner::callbackSetMaxAltitude, this);
   service_server_astar_path_          = nh_.advertiseService("astar_path_in", &OctomapPlanner::callbackAstarPath, this);
+  service_server_waypoints_           = nh_.advertiseService("waypoints_in", &OctomapPlanner::callbackWaypoints, this);
 
   // | ----------------------- transformer ---------------------- |
 
@@ -500,6 +505,76 @@ void OctomapPlanner::timeoutTrackerCmd(const std::string& topic, const ros::Time
 
     hover();
   }
+}
+
+bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res) {
+
+  if (!is_initialized_) {
+    res.success = false;
+    res.message = "Planner not initialized";
+    return true;
+  }
+
+  // 1. Thread-safe copy of the map
+  std::shared_ptr<octomap::OcTree> octree_copy;
+  {
+    std::scoped_lock lock(mutex_octree_);
+    if (!octree_) {
+      res.success = false;
+      res.message = "No map received yet";
+      return true;
+    }
+    octree_copy = std::make_shared<octomap::OcTree>(*octree_);
+  }
+
+  // Process each waypoint sequentially
+  for (size_t i = 1; i < req.waypoints.size(); ++i) {
+    octomap::point3d start_pt(req.waypoints[i-1].x, req.waypoints[i-1].y, req.waypoints[i-1].z);
+    octomap::point3d goal_pt(req.waypoints[i].x, req.waypoints[i].y, req.waypoints[i].z);
+
+    // Initialize the AstarPlanner
+    auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+    auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
+
+    mrs_octomap_planner::AstarPlanner planner(
+        0.3, 
+        _euclidean_distance_cutoff_, 
+        _distance_transform_distance_, 
+        planning_tree_resolution_, 
+        _distance_penalty_, 
+        _greedy_penalty_,
+        _timeout_threshold_, 
+        _max_waypoint_distance_, 
+        _min_altitude_, 
+        _max_altitude_, 
+        false,  
+        bv_planner_
+    );
+
+    // Find the path
+    auto result = planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
+    std::vector<octomap::point3d> waypoints = result.first;
+
+    if (waypoints.empty()) {
+      res.success = false;
+      res.message = "Path planning failed between waypoints";
+      return true;
+    }
+
+    // Convert waypoints to geometry_msgs/Point and add to response
+    for (const auto& w : waypoints) {
+      geometry_msgs::Point p;
+      p.x = w.x();
+      p.y = w.y();
+      p.z = w.z();
+      res.path.push_back(p);
+    }
+  }
+
+  res.success = true;
+  res.message = "Path found";
+
+  return true;
 }
 
 //}

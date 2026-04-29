@@ -43,6 +43,7 @@ find_package(catkin REQUIRED
 add_service_files(
   FILES
   AstarPath.srv
+  Waypoints.srv
 )
 
 # <--- Added: Generate the headers
