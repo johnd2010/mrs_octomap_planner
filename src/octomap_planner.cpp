@@ -537,7 +537,7 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
     auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
 
     mrs_octomap_planner::AstarPlanner planner(
-        0.3, 
+        _safe_obstacle_distance_, 
         _euclidean_distance_cutoff_, 
         _distance_transform_distance_, 
         planning_tree_resolution_, 
