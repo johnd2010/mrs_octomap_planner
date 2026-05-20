@@ -52,6 +52,7 @@ generate_messages(
   std_msgs
   mrs_msgs
   geometry_msgs
+  nav_msgs
 )
 
 find_package(octomap REQUIRED)

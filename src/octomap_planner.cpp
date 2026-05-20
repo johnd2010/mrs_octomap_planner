@@ -507,6 +507,76 @@ void OctomapPlanner::timeoutTrackerCmd(const std::string& topic, const ros::Time
   }
 }
 
+// bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res) {
+
+//   if (!is_initialized_) {
+//     res.success = false;
+//     res.message = "Planner not initialized";
+//     return true;
+//   }
+
+//   // 1. Thread-safe copy of the map
+//   std::shared_ptr<octomap::OcTree> octree_copy;
+//   {
+//     std::scoped_lock lock(mutex_octree_);
+//     if (!octree_) {
+//       res.success = false;
+//       res.message = "No map received yet";
+//       return true;
+//     }
+//     octree_copy = std::make_shared<octomap::OcTree>(*octree_);
+//   }
+
+//   // Process each waypoint sequentially
+//   for (size_t i = 1; i < req.waypoints.size(); ++i) {
+//     octomap::point3d start_pt(req.waypoints[i-1].x, req.waypoints[i-1].y, req.waypoints[i-1].z);
+//     octomap::point3d goal_pt(req.waypoints[i].x, req.waypoints[i].y, req.waypoints[i].z);
+
+//     // Initialize the AstarPlanner
+//     auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+//     auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
+
+//     mrs_octomap_planner::AstarPlanner planner(
+//         _safe_obstacle_distance_, 
+//         _euclidean_distance_cutoff_, 
+//         _distance_transform_distance_, 
+//         planning_tree_resolution_, 
+//         _distance_penalty_, 
+//         _greedy_penalty_,
+//         _timeout_threshold_, 
+//         _max_waypoint_distance_, 
+//         _min_altitude_, 
+//         _max_altitude_, 
+//         false,  
+//         bv_planner_
+//     );
+
+//     // Find the path
+//     auto result = planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
+//     std::vector<octomap::point3d> waypoints = result.first;
+
+//     if (waypoints.empty()) {
+//       res.success = false;
+//       res.message = "Path planning failed between waypoints";
+//       return true;
+//     }
+
+//     // Convert waypoints to geometry_msgs/Point and add to response
+//     for (const auto& w : waypoints) {
+//       geometry_msgs::Point p;
+//       p.x = w.x();
+//       p.y = w.y();
+//       p.z = w.z();
+//       res.path.push_back(p);
+//     }
+//   }
+
+//   res.success = true;
+//   res.message = "Path found";
+
+//   return true;
+// }
+
 bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res) {
 
   if (!is_initialized_) {
@@ -528,9 +598,9 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
   }
 
   // Process each waypoint sequentially
-  for (size_t i = 1; i < req.waypoints.size(); ++i) {
-    octomap::point3d start_pt(req.waypoints[i-1].x, req.waypoints[i-1].y, req.waypoints[i-1].z);
-    octomap::point3d goal_pt(req.waypoints[i].x, req.waypoints[i].y, req.waypoints[i].z);
+  for (size_t i = 1; i < req.path.poses.size(); ++i) {
+    octomap::point3d start_pt(req.path.poses[i-1].pose.position.x, req.path.poses[i-1].pose.position.y, req.path.poses[i-1].pose.position.z);
+    octomap::point3d goal_pt(req.path.poses[i].pose.position.x, req.path.poses[i].pose.position.y, req.path.poses[i].pose.position.z);
 
     // Initialize the AstarPlanner
     auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
@@ -577,7 +647,6 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
   return true;
 }
 
-//}
 /* callbackAstarPath() //{ */
 
 bool OctomapPlanner::callbackAstarPath(mrs_octomap_planner::AstarPath::Request& req, mrs_octomap_planner::AstarPath::Response& res) {
