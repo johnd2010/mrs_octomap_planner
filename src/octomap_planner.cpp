@@ -507,12 +507,17 @@ void OctomapPlanner::timeoutTrackerCmd(const std::string& topic, const ros::Time
   }
 }
 
-
 bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res) {
 
   if (!is_initialized_) {
     res.success = false;
     res.message = "Planner not initialized";
+    return true;
+  }
+
+  if (req.path.poses.size() < 2) {
+    res.success = false;
+    res.message = "Need at least 2 waypoints to plan a path";
     return true;
   }
 
@@ -528,12 +533,10 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
     octree_copy = std::make_shared<octomap::OcTree>(*octree_);
   }
 
-  // Pre-allocate path storage
-  res.path.clear();
-  double total_distance = 0.0;
-  bool all_waypoints_success = true;
+  std::vector<mrs_msgs::Reference> trajectory_references;
+  bool all_segments_planned = true;
 
-  // Process each waypoint sequentially
+  // 2. Process each waypoint sequentially with A*
   for (size_t i = 1; i < req.path.poses.size(); ++i) {
     octomap::point3d start_pt(req.path.poses[i-1].pose.position.x, req.path.poses[i-1].pose.position.y, req.path.poses[i-1].pose.position.z);
     octomap::point3d goal_pt(req.path.poses[i].pose.position.x, req.path.poses[i].pose.position.y, req.path.poses[i].pose.position.z);
@@ -541,8 +544,9 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
     auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
     auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
 
+    // Initialize the planner
     mrs_octomap_planner::AstarPlanner planner(
-        _safe_obstacle_distance_, 
+        safe_dist, 
         _euclidean_distance_cutoff_, 
         _distance_transform_distance_, 
         planning_tree_resolution_, 
@@ -551,90 +555,278 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
         _timeout_threshold_, 
         _max_waypoint_distance_, 
         _min_altitude_, 
-        _max_altitude_, 
-        false,  
+        max_alt, 
+        _unknown_is_occupied_,  
         bv_planner_
     );
 
-    // Find the path
     auto result = planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
     std::vector<octomap::point3d> waypoints = result.first;
 
+    // === CRITICAL CHANGE: Break instead of return ===
     if (waypoints.empty()) {
-      ROS_WARN_STREAM("[MrsOctomapPlanner]: Path planning failed between waypoints " << (i-1) << " and " << i);
-      
-      // If this is the very first segment, we can't continue: add nothing more
-      if (i == 1) {
-        res.success = false;
-        res.message = "First segment path planning failed";
-        return true;
-      }
-
-      // For later segments, keep going and mark partial success
-      all_waypoints_success = false;
-      
-      // Optionally: extrapolate or repeat last point as fallback
-      if (!res.path.empty()) {
-        geometry_msgs::Point last_point = res.path.back();
-        geometry_msgs::Point interpolated_point;
-        interpolated_point.x = last_point.x + (goal_pt.x() - start_pt.x()) * 0.5;
-        interpolated_point.y = last_point.y + (goal_pt.y() - start_pt.y()) * 0.5;
-        interpolated_point.z = last_point.z + (goal_pt.z() - start_pt.z()) * 0.5;
-        res.path.push_back(interpolated_point);
-      }
-      
-      continue;
+      ROS_WARN_STREAM("[MrsOctomapPlanner]: Path planning failed between waypoints " << (i-1) << " and " << i << ". Proceeding with partial path.");
+      all_segments_planned = false;
+      break; 
     }
 
-    // Convert waypoints to geometry_msgs/Point and add to response
+    // Extract the desired heading from the requested waypoint orientation
+    double segment_heading = 0.0;
+    try {
+      segment_heading = mrs_lib::AttitudeConverter(req.path.poses[i].pose.orientation).getHeading();
+    } catch (...) {
+      segment_heading = 0.0;
+    }
+
+    // Convert and stitch the geometric path into mrs_msgs::Reference
     for (size_t j = 0; j < waypoints.size(); ++j) {
-      geometry_msgs::Point p;
-      p.x = waypoints[j].x();
-      p.y = waypoints[j].y();
-      p.z = waypoints[j].z();
       
-      // Avoid duplicates at segment boundaries
-      if (j == 0 && !res.path.empty()) {
-        const auto& last_point = res.path.back();
-        if (std::abs(last_point.x - p.x) < 1e-3 && 
-            std::abs(last_point.y - p.y) < 1e-3 && 
-            std::abs(last_point.z - p.z) < 1e-3) {
-          continue; // Skip duplicate point at segment join
+      // Avoid duplicating coordinates at segment boundaries
+      if (j == 0 && !trajectory_references.empty()) {
+        const auto& last_point = trajectory_references.back().position;
+        if (std::abs(last_point.x - waypoints[j].x()) < 1e-3 && 
+            std::abs(last_point.y - waypoints[j].y()) < 1e-3 && 
+            std::abs(last_point.z - waypoints[j].z()) < 1e-3) {
+          continue; 
         }
       }
 
-      res.path.push_back(p);
-
-      // Sum up Euclidean distance between segments
-      if (i > 0 || j > 0) {
-        octomap::point3d prev_pt = (j == 0 && i > 0) 
-            ? waypoints.front() 
-            : (j > 0 ? waypoints[j] : waypoints[j-1]);
-        
-        octomap::point3d curr_pt = waypoints[j];
-        if (j > 0 || i > 0) {
-            total_distance += (curr_pt - prev_pt).norm();
-        }
-      }
-    }
-
-    // Add last goal point explicitly (to connect segments)
-    if (i < req.path.poses.size() - 1 && !waypoints.empty()) {
-      geometry_msgs::Point last_pt;
-      last_pt.x = goal_pt.x();
-      last_pt.y = goal_pt.y();
-      last_pt.z = goal_pt.z();
-      res.path.push_back(last_pt);
-      total_distance += (goal_pt - waypoints.back()).norm();
+      mrs_msgs::Reference ref;
+      ref.position.x = waypoints[j].x();
+      ref.position.y = waypoints[j].y();
+      ref.position.z = waypoints[j].z();
+      ref.heading = segment_heading;
+      trajectory_references.push_back(ref);
     }
   }
 
-  res.success = all_waypoints_success;
-  res.message = all_waypoints_success ? "Full path found" : "Partial path computed (some segments failed)";
-  // res.total_distance = total_distance;
+  // === NEW CHECK: Ensure we have enough points to form a trajectory ===
+  if (trajectory_references.size() < 2) {
+    res.success = false;
+    res.message = "Geometric path planning failed on the first segment. No safe path to execute.";
+    return true;
+  }
+
+  // 3. Request minimum-jerk trajectory generation
+  mrs_msgs::GetPathSrv srv_get_path;
+  srv_get_path.request.path.header.frame_id = octree_frame_;
+  srv_get_path.request.path.fly_now = false; 
+  srv_get_path.request.path.relax_heading = _trajectory_generation_relax_heading_;
+  srv_get_path.request.path.use_heading = _trajectory_generation_use_heading_;
+  srv_get_path.request.path.points = trajectory_references;
+
+  ROS_INFO("[MrsOctomapPlanner]: Calling trajectory generation for stitched path.");
+  
+  if (sc_get_trajectory_.call(srv_get_path) && srv_get_path.response.success) {
+    auto trajectory = srv_get_path.response.trajectory;
+
+    // 4. Verify the smooth trajectory doesn't cut corners into obstacles
+    bool is_safe = true;
+    for (size_t i = 0; i < trajectory.points.size() - 1; i++) {
+      octomap::point3d p1(trajectory.points[i].position.x, trajectory.points[i].position.y, trajectory.points[i].position.z);
+      octomap::point3d p2(trajectory.points[i + 1].position.x, trajectory.points[i + 1].position.y, trajectory.points[i + 1].position.z);
+      
+      octomap::KeyRay key_ray;
+      if (octree_copy->computeRayKeys(p1, p2, key_ray)) {
+        for (auto it = key_ray.begin(); it != key_ray.end(); ++it) {
+          auto node = octree_copy->search(*it);
+          if (node && octree_copy->isNodeOccupied(node)) {
+             is_safe = false;
+             ROS_WARN("[MrsOctomapPlanner]: Smoothed trajectory intersects an obstacle between waypoints %zu and %zu.", i, i+1);
+             break;
+          }
+        }
+      } else {
+         is_safe = false;
+         ROS_WARN("[MrsOctomapPlanner]: Raycasting failed during trajectory verification.");
+         break;
+      }
+      if (!is_safe) break;
+    }
+
+    if (is_safe) {
+      
+      // Populate the .srv response with the smooth trajectory points
+      res.path.clear();
+      for (const auto& point : trajectory.points) {
+         geometry_msgs::Point p;
+         p.x = point.position.x;
+         p.y = point.position.y;
+         p.z = point.position.z;
+         res.path.push_back(p);
+      }
+
+      // 5. Execute the safe trajectory
+      mrs_msgs::TrajectoryReferenceSrv srv_trajectory_reference;
+      srv_trajectory_reference.request.trajectory = trajectory;
+      srv_trajectory_reference.request.trajectory.fly_now = true; 
+      srv_trajectory_reference.request.trajectory.use_heading = _trajectory_generation_use_heading_;
+
+      path_id_++;
+      srv_trajectory_reference.request.trajectory.input_id = path_id_;
+
+      ROS_INFO("[MrsOctomapPlanner]: Sending stitched trajectory to control manager.");
+
+      if (sc_trajectory_reference_.call(srv_trajectory_reference) && srv_trajectory_reference.response.success) {
+        
+        setReplanningPoint(trajectory);
+        set_timepoints_ = true;
+        changeState(STATE_MOVING);
+
+        // === UPDATE RESPONSE MESSAGE BASED ON PARTIAL SUCCESS ===
+        res.success = true; // We flag as true so the client-side allows the execution
+        if (all_segments_planned) {
+            res.message = "Full trajectory generated, verified as safe, and execution started.";
+        } else {
+            res.message = "Partial trajectory generated and execution started (a blocked segment prevented reaching all waypoints).";
+        }
+        
+      } else {
+        ROS_ERROR("[MrsOctomapPlanner]: Failed to send stitched trajectory to control manager.");
+        res.success = false;
+        res.message = "Trajectory is safe, but execution service call failed.";
+      }
+
+    } else {
+      res.success = false;
+      res.message = "Trajectory generated, but smoothing caused a collision. Execution aborted.";
+    }
+
+  } else {
+    res.success = false;
+    res.message = "Failed to call trajectory generation service.";
+  }
 
   return true;
 }
+
+// bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res) {
+
+//   if (!is_initialized_) {
+//     res.success = false;
+//     res.message = "Planner not initialized";
+//     return true;
+//   }
+
+//   // 1. Thread-safe copy of the map
+//   std::shared_ptr<octomap::OcTree> octree_copy;
+//   {
+//     std::scoped_lock lock(mutex_octree_);
+//     if (!octree_) {
+//       res.success = false;
+//       res.message = "No map received yet";
+//       return true;
+//     }
+//     octree_copy = std::make_shared<octomap::OcTree>(*octree_);
+//   }
+
+//   // Pre-allocate path storage
+//   res.path.clear();
+//   double total_distance = 0.0;
+//   bool all_waypoints_success = true;
+
+//   // Process each waypoint sequentially
+//   for (size_t i = 1; i < req.path.poses.size(); ++i) {
+//     octomap::point3d start_pt(req.path.poses[i-1].pose.position.x, req.path.poses[i-1].pose.position.y, req.path.poses[i-1].pose.position.z);
+//     octomap::point3d goal_pt(req.path.poses[i].pose.position.x, req.path.poses[i].pose.position.y, req.path.poses[i].pose.position.z);
+
+//     auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+//     auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
+
+//     mrs_octomap_planner::AstarPlanner planner(
+//         _safe_obstacle_distance_, 
+//         _euclidean_distance_cutoff_, 
+//         _distance_transform_distance_, 
+//         planning_tree_resolution_, 
+//         _distance_penalty_, 
+//         _greedy_penalty_,
+//         _timeout_threshold_, 
+//         _max_waypoint_distance_, 
+//         _min_altitude_, 
+//         _max_altitude_, 
+//         false,  
+//         bv_planner_
+//     );
+
+//     // Find the path
+//     auto result = planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
+//     std::vector<octomap::point3d> waypoints = result.first;
+
+//     if (waypoints.empty()) {
+//       ROS_WARN_STREAM("[MrsOctomapPlanner]: Path planning failed between waypoints " << (i-1) << " and " << i);
+      
+//       // If this is the very first segment, we can't continue: add nothing more
+//       if (i == 1) {
+//         res.success = false;
+//         res.message = "First segment path planning failed";
+//         return true;
+//       }
+
+//       // For later segments, keep going and mark partial success
+//       all_waypoints_success = false;
+      
+//       // Optionally: extrapolate or repeat last point as fallback
+//       if (!res.path.empty()) {
+//         geometry_msgs::Point last_point = res.path.back();
+//         geometry_msgs::Point interpolated_point;
+//         interpolated_point.x = last_point.x + (goal_pt.x() - start_pt.x()) * 0.5;
+//         interpolated_point.y = last_point.y + (goal_pt.y() - start_pt.y()) * 0.5;
+//         interpolated_point.z = last_point.z + (goal_pt.z() - start_pt.z()) * 0.5;
+//         res.path.push_back(interpolated_point);
+//       }
+      
+//       continue;
+//     }
+
+//     // Convert waypoints to geometry_msgs/Point and add to response
+//     for (size_t j = 0; j < waypoints.size(); ++j) {
+//       geometry_msgs::Point p;
+//       p.x = waypoints[j].x();
+//       p.y = waypoints[j].y();
+//       p.z = waypoints[j].z();
+      
+//       // Avoid duplicates at segment boundaries
+//       if (j == 0 && !res.path.empty()) {
+//         const auto& last_point = res.path.back();
+//         if (std::abs(last_point.x - p.x) < 1e-3 && 
+//             std::abs(last_point.y - p.y) < 1e-3 && 
+//             std::abs(last_point.z - p.z) < 1e-3) {
+//           continue; // Skip duplicate point at segment join
+//         }
+//       }
+
+//       res.path.push_back(p);
+
+//       // Sum up Euclidean distance between segments
+//       if (i > 0 || j > 0) {
+//         octomap::point3d prev_pt = (j == 0 && i > 0) 
+//             ? waypoints.front() 
+//             : (j > 0 ? waypoints[j] : waypoints[j-1]);
+        
+//         octomap::point3d curr_pt = waypoints[j];
+//         if (j > 0 || i > 0) {
+//             total_distance += (curr_pt - prev_pt).norm();
+//         }
+//       }
+//     }
+
+//     // Add last goal point explicitly (to connect segments)
+//     if (i < req.path.poses.size() - 1 && !waypoints.empty()) {
+//       geometry_msgs::Point last_pt;
+//       last_pt.x = goal_pt.x();
+//       last_pt.y = goal_pt.y();
+//       last_pt.z = goal_pt.z();
+//       res.path.push_back(last_pt);
+//       total_distance += (goal_pt - waypoints.back()).norm();
+//     }
+//   }
+
+//   res.success = all_waypoints_success;
+//   res.message = all_waypoints_success ? "Full path found" : "Partial path computed (some segments failed)";
+//   // res.total_distance = total_distance;
+
+//   return true;
+// }
 
 /* callbackAstarPath() //{ */
 
