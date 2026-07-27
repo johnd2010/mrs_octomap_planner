@@ -23,8 +23,8 @@ distance_penalty: 1.0 # coefficient for traveled distance from start in A* cost 
 greedy_penalty: 1.0 # coefficient for estimated distance to goal in A* cost function
 
 max_waypoint_distance: 0.0 # [m] // or set negative for no padding
-min_altitude: -1000.0 # [m]
-max_altitude: 3.0 # [m]
+# min_altitude: -1000.0 # [m]
+# max_altitude: 3.0 # [m]
 unknown_is_occupied: true # if false, planning through unknown space is enabled 
 replan_after: 1.0 # [s] time from last planning after which replanning is triggered
 
@@ -49,7 +49,7 @@ trajectory_generator:
 subt_planner:
   use: true
   apply_postprocessing: true
-  make_path_straight: false # cannot be applied if postprocessing is active
+  make_path_straight: true # cannot be applied if postprocessing is active
   debug_info: false
   clearing_dist: 0.15 # [m] clear occupied and unknown space up to this distance from the starting position, might cause collision if greater than min_path_length
   admissibility: 1.0 # allows paths of length up to (admissibility * optimum length), speeds up the planning
@@ -76,7 +76,7 @@ subt_planner:
     distance: 1.0 # [m]
 
   remove_obsolete_points: true
-  obsolete_points_tolerance: 0.05
+  obsolete_points_tolerance: 1.5
 
 # visualization
 points_scale: 0.05
