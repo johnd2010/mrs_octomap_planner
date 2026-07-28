@@ -560,6 +560,70 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
   // ----------------------------------
 
   // 2. Process each waypoint sequentially with A*
+  // for (size_t i = 1; i < req.path.poses.size(); ++i) {
+  //   octomap::point3d start_pt;
+  //   if (i == 1) {
+  //       start_pt = first_start_pt; // Stitch from the MPC predicted state
+  //   } else {
+  //       start_pt = octomap::point3d(req.path.poses[i-1].pose.position.x, req.path.poses[i-1].pose.position.y, req.path.poses[i-1].pose.position.z);
+  //   }
+  //   octomap::point3d goal_pt(req.path.poses[i].pose.position.x, req.path.poses[i].pose.position.y, req.path.poses[i].pose.position.z);
+
+  //   auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
+  //   auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
+
+  //   // Initialize the SubT planner
+  //   mrs_subt_planning::AstarPlanner planner = mrs_subt_planning::AstarPlanner();
+
+  //   planner.initialize(true, _timeout_threshold_ - _subt_processing_timeout_, _subt_processing_timeout_, safe_dist, _subt_clearing_dist_,
+  //                           _min_altitude_, max_alt, _subt_debug_info_, bv_planner_, false);
+  //   planner.setAstarAdmissibility(_subt_admissibility_);
+
+  //   auto result = planner.findPath(start_pt, goal_pt, octree_copy, _subt_make_path_straight_, _subt_apply_postprocessing_, _subt_bbx_horizontal_,
+  //                                     _subt_bbx_vertical_, _subt_processing_safe_dist_, _subt_processing_max_iterations_,
+  //                                     _subt_processing_horizontal_neighbors_only_, _subt_processing_z_diff_tolerance_, _subt_processing_path_length_,
+  //                                     _subt_shortening_window_size_, _subt_shortening_distance_, _subt_apply_pruning_, _subt_pruning_dist_, false, 2.0,
+  //                                     _subt_remove_obsolete_points_, _subt_obsolete_points_tolerance_);
+
+  //   std::vector<octomap::point3d> waypoints = result.first;
+
+  //   // === CRITICAL CHANGE: Break instead of return ===
+  //   if (waypoints.empty()) {
+  //     ROS_WARN_STREAM("[MrsOctomapPlanner]: Path planning failed between waypoints " << (i-1) << " and " << i << ". Proceeding with partial path.");
+  //     all_segments_planned = false;
+  //     break; 
+  //   }
+
+  //   // Extract the desired heading from the requested waypoint orientation
+  //   double segment_heading = 0.0;
+  //   try {
+  //     segment_heading = mrs_lib::AttitudeConverter(req.path.poses[i].pose.orientation).getHeading();
+  //   } catch (...) {
+  //     segment_heading = 0.0;
+  //   }
+
+  //   // Convert and stitch the geometric path into mrs_msgs::Reference
+  //   for (size_t j = 0; j < waypoints.size(); ++j) {
+      
+  //     // Avoid duplicating coordinates at segment boundaries
+  //     if (j == 0 && !trajectory_references.empty()) {
+  //       const auto& last_point = trajectory_references.back().position;
+  //       if (std::abs(last_point.x - waypoints[j].x()) < 1e-3 && 
+  //           std::abs(last_point.y - waypoints[j].y()) < 1e-3 && 
+  //           std::abs(last_point.z - waypoints[j].z()) < 1e-3) {
+  //         continue; 
+  //       }
+  //     }
+
+  //     mrs_msgs::Reference ref;
+  //     ref.position.x = waypoints[j].x();
+  //     ref.position.y = waypoints[j].y();
+  //     ref.position.z = waypoints[j].z();
+  //     ref.heading = segment_heading;
+  //     trajectory_references.push_back(ref);
+  //   }
+  // }
+// 2. Process each waypoint sequentially with A*
   for (size_t i = 1; i < req.path.poses.size(); ++i) {
     octomap::point3d start_pt;
     if (i == 1) {
@@ -572,22 +636,44 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
     auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
     auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
 
-    // Initialize the SubT planner
-    mrs_subt_planning::AstarPlanner planner = mrs_subt_planning::AstarPlanner();
+    std::vector<octomap::point3d> waypoints;
 
-    planner.initialize(true, _timeout_threshold_ - _subt_processing_timeout_, _subt_processing_timeout_, safe_dist, _subt_clearing_dist_,
-                            _min_altitude_, max_alt, _subt_debug_info_, bv_planner_, false);
-    planner.setAstarAdmissibility(_subt_admissibility_);
+    // === DYNAMIC PLANNER SWITCH ===
+    if (_use_subt_planner_) {
+        // --- MRS SubT Planner ---
+        mrs_subt_planning::AstarPlanner subt_planner = mrs_subt_planning::AstarPlanner();
 
-    auto result = planner.findPath(start_pt, goal_pt, octree_copy, _subt_make_path_straight_, _subt_apply_postprocessing_, _subt_bbx_horizontal_,
-                                      _subt_bbx_vertical_, _subt_processing_safe_dist_, _subt_processing_max_iterations_,
-                                      _subt_processing_horizontal_neighbors_only_, _subt_processing_z_diff_tolerance_, _subt_processing_path_length_,
-                                      _subt_shortening_window_size_, _subt_shortening_distance_, _subt_apply_pruning_, _subt_pruning_dist_, false, 2.0,
-                                      _subt_remove_obsolete_points_, _subt_obsolete_points_tolerance_);
+        subt_planner.initialize(true, _timeout_threshold_ - _subt_processing_timeout_, _subt_processing_timeout_, safe_dist, _subt_clearing_dist_,
+                                _min_altitude_, max_alt, _subt_debug_info_, bv_planner_, false);
+        subt_planner.setAstarAdmissibility(_subt_admissibility_);
 
-    std::vector<octomap::point3d> waypoints = result.first;
+        auto result = subt_planner.findPath(start_pt, goal_pt, octree_copy, _subt_make_path_straight_, _subt_apply_postprocessing_, _subt_bbx_horizontal_,
+                                          _subt_bbx_vertical_, _subt_processing_safe_dist_, _subt_processing_max_iterations_,
+                                          _subt_processing_horizontal_neighbors_only_, _subt_processing_z_diff_tolerance_, _subt_processing_path_length_,
+                                          _subt_shortening_window_size_, _subt_shortening_distance_, _subt_apply_pruning_, _subt_pruning_dist_, false, 2.0,
+                                          _subt_remove_obsolete_points_, _subt_obsolete_points_tolerance_);
+        waypoints = result.first;
+    } else {
+        // --- Native Octomap Planner ---
+        mrs_octomap_planner::AstarPlanner native_planner(
+            safe_dist, 
+            _euclidean_distance_cutoff_, 
+            _distance_transform_distance_, 
+            planning_tree_resolution_, 
+            _distance_penalty_, 
+            _greedy_penalty_,
+            _timeout_threshold_, 
+            _max_waypoint_distance_, 
+            _min_altitude_, 
+            max_alt, 
+            _unknown_is_occupied_,  
+            bv_planner_
+        );
 
-    // === CRITICAL CHANGE: Break instead of return ===
+        auto result = native_planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
+        waypoints = result.first;
+    }
+
     if (waypoints.empty()) {
       ROS_WARN_STREAM("[MrsOctomapPlanner]: Path planning failed between waypoints " << (i-1) << " and " << i << ". Proceeding with partial path.");
       all_segments_planned = false;
@@ -623,7 +709,6 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
       trajectory_references.push_back(ref);
     }
   }
-
   // === NEW CHECK: Ensure we have enough points to form a trajectory ===
   if (trajectory_references.size() < 2) {
     res.success = false;
@@ -724,230 +809,6 @@ bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& 
 
   return true;
 }
-
-// bool OctomapPlanner::callbackWaypoints(mrs_octomap_planner::Waypoints::Request& req, mrs_octomap_planner::Waypoints::Response& res) {
-
-//   if (!is_initialized_) {
-//     res.success = false;
-//     res.message = "Planner not initialized";
-//     return true;
-//   }
-
-//   if (req.path.poses.size() < 2) {
-//     res.success = false;
-//     res.message = "Need at least 2 waypoints to plan a path";
-//     return true;
-//   }
-
-//   // 1. Thread-safe copy of the map
-//   std::shared_ptr<octomap::OcTree> octree_copy;
-//   {
-//     std::scoped_lock lock(mutex_octree_);
-//     if (!octree_) {
-//       res.success = false;
-//       res.message = "No map received yet";
-//       return true;
-//     }
-//     octree_copy = std::make_shared<octomap::OcTree>(*octree_);
-//   }
-
-// std::vector<mrs_msgs::Reference> trajectory_references;
-//   bool all_segments_planned = true;
-
-//   // --- TRAJECTORY STITCHING SETUP ---
-//   ros::Time path_stamp = ros::Time(0);
-//   octomap::point3d first_start_pt;
-  
-//   // Project state 1.0 second into the future to account for A* and TrajGen calculation time
-//   double time_for_planning = 1.0; 
-//   ros::Time init_cond_time = ros::Time::now() + ros::Duration(time_for_planning);
-//   auto initial_condition = getInitialCondition(init_cond_time);
-
-//   if (initial_condition) {
-//       first_start_pt = octomap::point3d(
-//           initial_condition.value().reference.position.x,
-//           initial_condition.value().reference.position.y,
-//           initial_condition.value().reference.position.z
-//       );
-//       path_stamp = initial_condition.value().header.stamp;
-//       ROS_INFO("[MrsOctomapPlanner]: Stitching trajectory from future state (stamp: %.3f)", path_stamp.toSec());
-//   } else {
-//       ROS_WARN("[MrsOctomapPlanner]: Could not get future state. Falling back to requested start point.");
-//       first_start_pt = octomap::point3d(req.path.poses[0].pose.position.x, req.path.poses[0].pose.position.y, req.path.poses[0].pose.position.z);
-//   }
-//   // ----------------------------------
-
-//   // 2. Process each waypoint sequentially with A*
-// for (size_t i = 1; i < req.path.poses.size(); ++i) {
-//     octomap::point3d start_pt;
-//     if (i == 1) {
-//         start_pt = first_start_pt; // Stitch from the MPC predicted state
-//     } else {
-//         start_pt = octomap::point3d(req.path.poses[i-1].pose.position.x, req.path.poses[i-1].pose.position.y, req.path.poses[i-1].pose.position.z);
-//     }
-//     octomap::point3d goal_pt(req.path.poses[i].pose.position.x, req.path.poses[i].pose.position.y, req.path.poses[i].pose.position.z);
-
-//     auto safe_dist = mrs_lib::get_mutexed(mutex_safety_distance_, _safe_obstacle_distance_);
-//     auto max_alt   = mrs_lib::get_mutexed(mutex_max_altitude_, _max_altitude_);
-
-//     // Initialize the planner
-//     mrs_octomap_planner::AstarPlanner planner(
-//         safe_dist, 
-//         _euclidean_distance_cutoff_, 
-//         _distance_transform_distance_, 
-//         planning_tree_resolution_, 
-//         _distance_penalty_, 
-//         _greedy_penalty_,
-//         _timeout_threshold_, 
-//         _max_waypoint_distance_, 
-//         _min_altitude_, 
-//         max_alt, 
-//         _unknown_is_occupied_,  
-//         bv_planner_
-//     );
-
-//     auto result = planner.findPath(start_pt, goal_pt, octree_copy, _timeout_threshold_);
-//     std::vector<octomap::point3d> waypoints = result.first;
-
-//     // === CRITICAL CHANGE: Break instead of return ===
-//     if (waypoints.empty()) {
-//       ROS_WARN_STREAM("[MrsOctomapPlanner]: Path planning failed between waypoints " << (i-1) << " and " << i << ". Proceeding with partial path.");
-//       all_segments_planned = false;
-//       break; 
-//     }
-
-//     // Extract the desired heading from the requested waypoint orientation
-//     double segment_heading = 0.0;
-//     try {
-//       segment_heading = mrs_lib::AttitudeConverter(req.path.poses[i].pose.orientation).getHeading();
-//     } catch (...) {
-//       segment_heading = 0.0;
-//     }
-
-//     // Convert and stitch the geometric path into mrs_msgs::Reference
-//     for (size_t j = 0; j < waypoints.size(); ++j) {
-      
-//       // Avoid duplicating coordinates at segment boundaries
-//       if (j == 0 && !trajectory_references.empty()) {
-//         const auto& last_point = trajectory_references.back().position;
-//         if (std::abs(last_point.x - waypoints[j].x()) < 1e-3 && 
-//             std::abs(last_point.y - waypoints[j].y()) < 1e-3 && 
-//             std::abs(last_point.z - waypoints[j].z()) < 1e-3) {
-//           continue; 
-//         }
-//       }
-
-//       mrs_msgs::Reference ref;
-//       ref.position.x = waypoints[j].x();
-//       ref.position.y = waypoints[j].y();
-//       ref.position.z = waypoints[j].z();
-//       ref.heading = segment_heading;
-//       trajectory_references.push_back(ref);
-//     }
-//   }
-
-//   // === NEW CHECK: Ensure we have enough points to form a trajectory ===
-//   if (trajectory_references.size() < 2) {
-//     res.success = false;
-//     res.message = "Geometric path planning failed on the first segment. No safe path to execute.";
-//     return true;
-//   }
-
-//   // 3. Request minimum-jerk trajectory generation
-//   mrs_msgs::GetPathSrv srv_get_path;
-//   srv_get_path.request.path.header.frame_id = octree_frame_;
-//   srv_get_path.request.path.header.stamp = path_stamp; // Pass the future timestamp for smooth MPC handoff
-//   srv_get_path.request.path.fly_now = false;
-//   srv_get_path.request.path.relax_heading = _trajectory_generation_relax_heading_;
-//   srv_get_path.request.path.use_heading = _trajectory_generation_use_heading_;
-//   srv_get_path.request.path.points = trajectory_references;
-
-//   ROS_INFO("[MrsOctomapPlanner]: Calling trajectory generation for stitched path.");
-  
-//   if (sc_get_trajectory_.call(srv_get_path) && srv_get_path.response.success) {
-//     auto trajectory = srv_get_path.response.trajectory;
-
-//     // 4. Verify the smooth trajectory doesn't cut corners into obstacles
-//     bool is_safe = true;
-//     for (size_t i = 0; i < trajectory.points.size() - 1; i++) {
-//       octomap::point3d p1(trajectory.points[i].position.x, trajectory.points[i].position.y, trajectory.points[i].position.z);
-//       octomap::point3d p2(trajectory.points[i + 1].position.x, trajectory.points[i + 1].position.y, trajectory.points[i + 1].position.z);
-      
-//       octomap::KeyRay key_ray;
-//       if (octree_copy->computeRayKeys(p1, p2, key_ray)) {
-//         for (auto it = key_ray.begin(); it != key_ray.end(); ++it) {
-//           auto node = octree_copy->search(*it);
-//           if (node && octree_copy->isNodeOccupied(node)) {
-//              is_safe = false;
-//              ROS_WARN("[MrsOctomapPlanner]: Smoothed trajectory intersects an obstacle between waypoints %zu and %zu.", i, i+1);
-//              break;
-//           }
-//         }
-//       } else {
-//          is_safe = false;
-//          ROS_WARN("[MrsOctomapPlanner]: Raycasting failed during trajectory verification.");
-//          break;
-//       }
-//       if (!is_safe) break;
-//     }
-
-//     if (is_safe) {
-      
-//       // Populate the .srv response with the smooth trajectory points
-//       res.path.clear();
-//       for (const auto& point : trajectory.points) {
-//          geometry_msgs::Point p;
-//          p.x = point.position.x;
-//          p.y = point.position.y;
-//          p.z = point.position.z;
-//          res.path.push_back(p);
-//       }
-
-//       // 5. Execute the safe trajectory
-//       mrs_msgs::TrajectoryReferenceSrv srv_trajectory_reference;
-//       srv_trajectory_reference.request.trajectory = trajectory;
-//       srv_trajectory_reference.request.trajectory.fly_now = true; 
-//       srv_trajectory_reference.request.trajectory.use_heading = _trajectory_generation_use_heading_;
-
-//       path_id_++;
-//       srv_trajectory_reference.request.trajectory.input_id = path_id_;
-
-//       ROS_INFO("[MrsOctomapPlanner]: Sending stitched trajectory to control manager.");
-
-//       if (sc_trajectory_reference_.call(srv_trajectory_reference) && srv_trajectory_reference.response.success) {
-        
-//         setReplanningPoint(trajectory);
-//         set_timepoints_ = true;
-//         changeState(STATE_MOVING);
-
-//         // === UPDATE RESPONSE MESSAGE BASED ON PARTIAL SUCCESS ===
-//         res.success = true; // We flag as true so the client-side allows the execution
-//         if (all_segments_planned) {
-//             res.message = "Full trajectory generated, verified as safe, and execution started.";
-//         } else {
-//             res.message = "Partial trajectory generated and execution started (a blocked segment prevented reaching all waypoints).";
-//         }
-        
-//       } else {
-//         ROS_ERROR("[MrsOctomapPlanner]: Failed to send stitched trajectory to control manager.");
-//         res.success = false;
-//         res.message = "Trajectory is safe, but execution service call failed.";
-//       }
-
-//     } else {
-//       res.success = false;
-//       res.message = "Trajectory generated, but smoothing caused a collision. Execution aborted.";
-//     }
-
-//   } else {
-//     res.success = false;
-//     res.message = "Failed to call trajectory generation service.";
-//   }
-
-//   return true;
-// }
-
-/* callbackAstarPath() //{ */
 
 bool OctomapPlanner::callbackAstarPath(mrs_octomap_planner::AstarPath::Request& req, mrs_octomap_planner::AstarPath::Response& res) {
 
@@ -1507,7 +1368,8 @@ void OctomapPlanner::timerMain([[maybe_unused]] const ros::TimerEvent& evt) {
       if (control_manager_diag->tracker_status.have_goal) {
         time_for_planning = _timeout_threshold_;
       } else {
-        time_for_planning = _timeout_threshold_ + pow(1.5, float(replanning_counter_));
+        double backoff = pow(1.5, float(replanning_counter_));
+        time_for_planning = _timeout_threshold_ + std::min(backoff, 10.0);
       }
 
       ROS_INFO("[MrsOctomapPlanner]: planning timeout %.2f s", time_for_planning);
@@ -2290,9 +2152,15 @@ std::optional<mrs_msgs::ReferenceStamped> OctomapPlanner::getInitialCondition(co
     return {};
   }
 
+  // if ((des_time - prediction_full_state.stamps.back()).toSec() > 0) {
+  //   ROS_ERROR_THROTTLE(1.0, "[MrsOctomapPlanner]: could not obtain initial condition, the desired time is too far in the future");
+  //   return {};
+  // }
+  
+  ros::Time clamped_des_time = des_time;
   if ((des_time - prediction_full_state.stamps.back()).toSec() > 0) {
-    ROS_ERROR_THROTTLE(1.0, "[MrsOctomapPlanner]: could not obtain initial condition, the desired time is too far in the future");
-    return {};
+    ROS_WARN_THROTTLE(1.0, "[MrsOctomapPlanner]: Requested time exceeds prediction horizon. Clamping to the furthest predicted state.");
+    clamped_des_time = prediction_full_state.stamps.back();
   }
 
   mrs_msgs::ReferenceStamped orig_reference;
@@ -2301,9 +2169,8 @@ std::optional<mrs_msgs::ReferenceStamped> OctomapPlanner::getInitialCondition(co
   ros::Time future_time_stamp;
   bool found_future_state = false;
 
-  for (int i = 0; i < prediction_full_state.stamps.size(); i++) {
-
-    if ((prediction_full_state.stamps[i] - des_time).toSec() > 0) {
+for (int i = 0; i < prediction_full_state.stamps.size(); i++) {
+    if ((prediction_full_state.stamps[i] - clamped_des_time).toSec() >= 0) { // Changed to clamped_des_time and >=
       orig_reference.reference.position.x = prediction_full_state.position[i].x;
       orig_reference.reference.position.y = prediction_full_state.position[i].y;
       orig_reference.reference.position.z = prediction_full_state.position[i].z;

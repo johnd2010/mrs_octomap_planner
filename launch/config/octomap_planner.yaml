@@ -65,7 +65,7 @@ subt_planner:
   postprocessing:
     timeout: 0.05 # [s]
     path_length: -1.0 # [m] length of subpath that is passed to postprocessing (set negativ number to process whole path)
-    safe_dist: 1.2 # [m]
+    safe_dist: 2.2 # [m]
     max_iteration: 5
     horizontal_neighbors_only: true
     z_diff_tolerance: 0.5 # [m]
